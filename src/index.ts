@@ -1,46 +1,19 @@
-import { LogicType, makePlugin } from "@luna-park/plugin";
+import { makePlugin } from "@luna-park/plugin";
 
-import { myComponent } from "@/components/myComponent.ts";
-import { myFunctionNode } from "@/nodes/myFunctionNode.ts";
-import { myOperationNode } from "@/nodes/myOperationNode.ts";
-import style from "@/style.css?inline";
-import { colorTokens } from "@/tokens/color.ts";
-import { lengthTokens } from "@/tokens/length.ts";
+import { draggable } from "@/components/draggable.ts";
+import { dropZone } from "@/components/dropZone.ts";
 
-import LWrapper from "./components/LWrapper.vue";
 import icon from "./logo.svg";
 
 export default makePlugin({
-    config: LogicType.object({
-        name: LogicType.string({ default: "Marty McFly" })
-    }),
-    description: "Example plugin",
+    description: "Drag and drop primitives for Luna Park",
     editor: {
         components: [
-            myComponent
-        ],
-        nodes: [
-            myFunctionNode,
-            myOperationNode
-        ],
-        tokens: [
-            ...colorTokens,
-            ...lengthTokens
-        ],
-        wrapper: { component: LWrapper, name: "wrapper" }
+            draggable,
+            dropZone
+        ]
     },
     icon,
-    id: "boilerplate",
-    inject: {
-        css: style
-    },
-    lifecycle: {
-        mount: () => {
-            console.log("Boilerplate plugin mounted!");
-        },
-        update: ({ config }) => {
-            console.log(`Hello ${ config.name }`);
-        }
-    },
-    name: "Boilerplate"
+    id: "drag-and-drop",
+    name: "Drag and Drop"
 });

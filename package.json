@@ -1,21 +1,21 @@
 {
-    "name": "@luna-park/plugin-boilerplate",
+    "name": "drag-and-drop",
     "version": "1.0.0",
     "private": false,
-    "description": "Boilerplate plugin for Luna Park",
+    "description": "Drag and drop primitives for Luna Park",
     "keywords": [
         "luna-park",
         "plugin",
-        "boilerplate"
+        "drag-and-drop",
+        "dnd"
     ],
     "homepage": "https://luna-park.app",
     "repository": {
         "type": "git",
-        "url": "https://github.com/lunapark/plugin-boilerplate"
+        "url": "git+https://github.com/gab-a/drag-and-drop.git"
     },
     "author": {
-        "name": "Luna Park",
-        "url": "https://luna-park.app"
+        "name": "gab-a"
     },
     "type": "module",
     "exports": {
@@ -30,24 +30,26 @@
     "scripts": {
         "build": "vite build",
         "dev": "vite build --watch",
+        "prepublishOnly": "pnpm build",
+        "test:dnd": "powershell.exe -ExecutionPolicy Bypass -File tests/dnd-harness/run-cdp-test.ps1",
         "preview": "luna-preview"
     },
     "dependencies": {
-        "vue": "^3.5.27"
+        "vue": "^3.5.32"
     },
     "devDependencies": {
-        "@luna-park/eslint-config": "^1.0.3",
-        "@luna-park/plugin": "^1.2.0",
-        "@types/node": "^25.2.0",
-        "@vitejs/plugin-vue": "^6.0.4",
-        "@vue/tsconfig": "^0.8.1",
-        "eslint": "^9.39.2",
-        "globals": "^17.3.0",
-        "typescript": "^5.9.3",
-        "typescript-eslint": "^8.54.0",
-        "vite": "^7.3.1",
-        "vite-plugin-css-injected-by-js": "^3.5.2",
-        "vue-tsc": "^3.2.4"
+        "@luna-park/eslint-config": "^1.2.6",
+        "@luna-park/plugin": "^1.4.2",
+        "@types/node": "^25.6.0",
+        "@vitejs/plugin-vue": "^6.0.6",
+        "@vue/tsconfig": "^0.9.1",
+        "eslint": "^10.2.1",
+        "globals": "^17.5.0",
+        "typescript": "^6.0.3",
+        "typescript-eslint": "^8.59.0",
+        "vite": "^8.0.9",
+        "vite-plugin-css-injected-by-js": "^5.0.1",
+        "vue-tsc": "^3.2.7"
     },
     "peerDependencies": {
         "vue": "^3.5.24"

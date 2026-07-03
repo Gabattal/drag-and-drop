@@ -1,3 +1,5 @@
 .idea
 dist
+dist-dnd-harness
 node_modules
+.tmp-dnd-cdp-*
