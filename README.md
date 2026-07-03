@@ -3,7 +3,7 @@
 Drag and drop primitives for **Luna Park**. The plugin provides two composable
 components, `Draggable` and `DropZone`, that can wrap arbitrary content.
 
-Package name: `drag-and-drop`
+Package name: `@gabattal/drag-and-drop`
 
 ## Components
 
@@ -114,12 +114,6 @@ Publish to npm:
 
 ```powershell
 npm login
-npm publish
-```
-
-If you later rename the package to a scoped public package, publish with:
-
-```powershell
 npm publish --access public
 ```
 

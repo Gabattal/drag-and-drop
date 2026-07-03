@@ -1,5 +1,5 @@
 {
-    "name": "drag-and-drop",
+    "name": "@gabattal/drag-and-drop",
     "version": "1.0.0",
     "private": false,
     "description": "Drag and drop primitives for Luna Park",
