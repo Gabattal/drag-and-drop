@@ -4,9 +4,8 @@
         :class="{ 'is-source': isDragging, 'is-disabled': disabled }"
         :data-dnd-draggable-id="effectiveId()"
         :data-dnd-group="group"
-        :draggable="!disabled"
-        @dragstart="onDragStart"
-        @dragend="onDragEnd"
+        :draggable="false"
+        @pointerdown="onPointerDown"
     >
         <slot />
     </div>
@@ -40,12 +39,17 @@ const effectiveId = () => props.id || autoId;
 
 let ghost: HTMLElement | null = null;
 let source: HTMLElement | null = null;
+let activeZone: HTMLElement | null = null;
 let ghostWidth = 0;
 let ghostHeight = 0;
 let offsetX = 0;
 let offsetY = 0;
 let lastX = 0;
 let lastTime = 0;
+let moveFrame = 0;
+let pendingX = 0;
+let pendingY = 0;
+let activePointerId = 0;
 let velocityX = 0;
 
 const TILT_MULTIPLIER = 3;
@@ -53,6 +57,49 @@ const TILT_MAX = 2;
 const VELOCITY_SMOOTH = 0.92;
 const DROP_ANIM_MS = 240;
 const DROP_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
+const PLACEHOLDER_HOLD_MS = 180;
+const INHERITED_GHOST_PROPERTIES = [
+    "color",
+    "font-family",
+    "font-size",
+    "font-style",
+    "font-weight",
+    "letter-spacing",
+    "line-height",
+    "text-align"
+];
+const VISUAL_GHOST_PROPERTIES = [
+    "align-items",
+    "background-color",
+    "border-radius",
+    "color",
+    "display",
+    "font-family",
+    "font-size",
+    "font-style",
+    "font-weight",
+    "height",
+    "justify-content",
+    "letter-spacing",
+    "line-height",
+    "max-height",
+    "max-width",
+    "min-height",
+    "min-width",
+    "overflow",
+    "padding-bottom",
+    "padding-left",
+    "padding-right",
+    "padding-top",
+    "text-align",
+    "text-decoration-color",
+    "text-decoration-line",
+    "text-overflow",
+    "text-transform",
+    "vertical-align",
+    "white-space",
+    "width"
+];
 
 function sourceLocation(element: HTMLElement): { sourceIndex: number; sourceZoneId: string } {
     const zone = element.closest<HTMLElement>("[data-dnd-dropzone-id]");
@@ -68,13 +115,123 @@ function sourceLocation(element: HTMLElement): { sourceIndex: number; sourceZone
     };
 }
 
-function onDragStart(e: DragEvent) {
+function copyInheritedCustomProperties(from: Element, to: Element) {
+    if (!(to instanceof HTMLElement || to instanceof SVGElement)) return;
+
+    const computed = window.getComputedStyle(from);
+    for (const property of INHERITED_GHOST_PROPERTIES) {
+        to.style.setProperty(property, computed.getPropertyValue(property));
+    }
+
+    for (let i = 0; i < computed.length; i++) {
+        const property = computed.item(i);
+        if (property.startsWith("--")) {
+            to.style.setProperty(property, computed.getPropertyValue(property));
+        }
+    }
+}
+
+function copyElementState(from: Element, to: Element) {
+    if (from instanceof HTMLCanvasElement && to instanceof HTMLCanvasElement) {
+        to.getContext("2d")?.drawImage(from, 0, 0);
+    }
+
+    if (from instanceof HTMLTextAreaElement && to instanceof HTMLTextAreaElement) {
+        to.value = from.value;
+    }
+
+    if (from instanceof HTMLInputElement && to instanceof HTMLInputElement) {
+        to.checked = from.checked;
+        to.value = from.value;
+    }
+
+    if (from instanceof HTMLSelectElement && to instanceof HTMLSelectElement) {
+        to.value = from.value;
+    }
+}
+
+function hasExternalClass(element: Element): boolean {
+    if (!(element instanceof HTMLElement || element instanceof SVGElement)) return false;
+
+    for (const className of Array.from(element.classList)) {
+        if (!className.startsWith("lp_")) return true;
+    }
+
+    return false;
+}
+
+function copyVisualProperties(from: Element, to: Element) {
+    if (!(to instanceof HTMLElement || to instanceof SVGElement)) return;
+
+    const computed = window.getComputedStyle(from);
+    for (const property of VISUAL_GHOST_PROPERTIES) {
+        to.style.setProperty(property, computed.getPropertyValue(property));
+    }
+}
+
+function copyRenderedElement(from: Element, to: Element) {
+    copyElementState(from, to);
+
+    const fromElements = Array.from(from.querySelectorAll("*"));
+    const toElements = Array.from(to.querySelectorAll("*"));
+
+    for (const [index, element] of fromElements.entries()) {
+        const clonedElement = toElements[index];
+        if (!clonedElement) continue;
+
+        copyElementState(element, clonedElement);
+        if (hasExternalClass(element)) copyVisualProperties(element, clonedElement);
+    }
+}
+
+function ghostTransform(x: number, y: number, tilt = 0): string {
+    return `translate3d(${ x - offsetX }px, ${ y - offsetY }px, 0) rotate(${ tilt }deg)`;
+}
+
+function removeStaleDragArtifacts() {
+    for (const element of Array.from(document.querySelectorAll(".dnd-placeholder, .draggable-ghost"))) {
+        element.remove();
+    }
+}
+
+function zoneAtPoint(x: number, y: number): HTMLElement | null {
+    for (const element of document.elementsFromPoint(x, y)) {
+        const zone = element.closest<HTMLElement>("[data-dnd-dropzone-id]");
+        if (zone?.dataset.dndGroup === props.group) return zone;
+    }
+
+    return null;
+}
+
+function emitZoneEvent(zone: HTMLElement, type: string, x: number, y: number) {
+    zone.dispatchEvent(new CustomEvent(type, {
+        detail: { clientX: x, clientY: y },
+        bubbles: false
+    }));
+}
+
+function updateActiveZone(x: number, y: number) {
+    const nextZone = zoneAtPoint(x, y);
+    if (activeZone && activeZone !== nextZone) {
+        emitZoneEvent(activeZone, "dndpointerleave", x, y);
+    }
+
+    activeZone = nextZone;
+    if (activeZone) emitZoneEvent(activeZone, "dndpointermove", x, y);
+}
+
+function onPointerDown(e: PointerEvent) {
     if (props.disabled) {
         e.preventDefault();
         return;
     }
+    if (e.button !== 0) return;
 
+    e.preventDefault();
+    removeStaleDragArtifacts();
     source = e.currentTarget as HTMLElement;
+    activePointerId = e.pointerId;
+    source.setPointerCapture(activePointerId);
 
     const rect = source.getBoundingClientRect();
     ghostWidth = rect.width;
@@ -95,74 +252,117 @@ function onDragStart(e: DragEvent) {
         width: ghostWidth
     });
 
-    if (e.dataTransfer) {
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData("text/plain", "");
-        // Hide the browser default drag image with a 1x1 transparent canvas.
-        const empty = document.createElement("canvas");
-        empty.width = 1;
-        empty.height = 1;
-        e.dataTransfer.setDragImage(empty, 0, 0);
-    }
-
     ghost = source.cloneNode(true) as HTMLElement;
+    copyInheritedCustomProperties(source, ghost);
+    copyRenderedElement(source, ghost);
     ghost.classList.add("draggable-ghost");
+    ghost.style.boxShadow = "0 12px 30px rgba(15, 23, 42, 0.16)";
+    ghost.style.contain = "layout paint";
+    ghost.style.left = "0";
+    ghost.style.margin = "0";
+    ghost.style.pointerEvents = "none";
+    ghost.style.position = "fixed";
+    ghost.style.top = "0";
+    ghost.style.transition = "none";
+    ghost.style.willChange = "transform";
+    ghost.style.zIndex = "9999";
     ghost.style.width = `${ ghostWidth }px`;
     ghost.style.height = `${ ghostHeight }px`;
-    ghost.style.translate = `${ e.clientX - offsetX }px ${ e.clientY - offsetY }px`;
+    ghost.style.transform = ghostTransform(e.clientX, e.clientY);
     document.body.appendChild(ghost);
 
     lastX = e.clientX;
     lastTime = performance.now();
+    pendingX = e.clientX;
+    pendingY = e.clientY;
     velocityX = 0;
 
     isDragging.value = true;
-    document.addEventListener("dragover", onDocumentDragOver);
+    document.addEventListener("pointermove", onDocumentPointerMove, { passive: false });
+    document.addEventListener("pointerup", onDocumentPointerUp);
+    document.addEventListener("pointercancel", onDocumentPointerCancel);
     emit("dragStart", { data: props.data, group: props.group, id: effectiveId() });
+    updateActiveZone(e.clientX, e.clientY);
 }
 
-function onDocumentDragOver(e: DragEvent) {
+function onDocumentPointerMove(e: PointerEvent) {
+    if (e.pointerId !== activePointerId) return;
     if (!ghost) return;
-    if (e.clientX === 0 && e.clientY === 0) return;
+    e.preventDefault();
+
+    pendingX = e.clientX;
+    pendingY = e.clientY;
+    updateActiveZone(e.clientX, e.clientY);
+    if (moveFrame) return;
+
+    moveFrame = requestAnimationFrame(moveGhost);
+}
+
+function moveGhost() {
+    if (!ghost) return;
+    moveFrame = 0;
 
     const now = performance.now();
     const dt = Math.max(now - lastTime, 1);
-    const dx = e.clientX - lastX;
+    const dx = pendingX - lastX;
 
     velocityX = velocityX * VELOCITY_SMOOTH + (dx / dt) * (1 - VELOCITY_SMOOTH);
     const tilt = Math.max(-TILT_MAX, Math.min(TILT_MAX, velocityX * TILT_MULTIPLIER));
 
-    ghost.style.translate = `${ e.clientX - offsetX }px ${ e.clientY - offsetY }px`;
-    ghost.style.rotate = `${ tilt }deg`;
+    ghost.style.transform = ghostTransform(pendingX, pendingY, tilt);
 
-    lastX = e.clientX;
+    lastX = pendingX;
     lastTime = now;
 }
 
-function onDragEnd() {
-    document.removeEventListener("dragover", onDocumentDragOver);
+function removePointerListeners() {
+    document.removeEventListener("pointermove", onDocumentPointerMove);
+    document.removeEventListener("pointerup", onDocumentPointerUp);
+    document.removeEventListener("pointercancel", onDocumentPointerCancel);
+}
+
+function onDocumentPointerUp(e: PointerEvent) {
+    if (e.pointerId !== activePointerId) return;
+    e.preventDefault();
+    updateActiveZone(e.clientX, e.clientY);
+    if (activeZone) emitZoneEvent(activeZone, "dndpointerdrop", e.clientX, e.clientY);
+    finishDrag();
+}
+
+function onDocumentPointerCancel(e: PointerEvent) {
+    if (e.pointerId !== activePointerId) return;
+    if (activeZone) emitZoneEvent(activeZone, "dndpointerleave", e.clientX, e.clientY);
+    finishDrag();
+}
+
+function finishDrag() {
+    removePointerListeners();
+    if (moveFrame) cancelAnimationFrame(moveFrame);
+    moveFrame = 0;
+    if (source?.hasPointerCapture(activePointerId)) source.releasePointerCapture(activePointerId);
 
     const g = ghost;
     const cur = dndState.get();
     const placeholder = cur?.placeholder ?? null;
+    const droppedElement = cur?.element ?? null;
     const targetRect = cur?.dropRect ?? cur?.sourceRect ?? null;
 
     ghost = null;
     source = null;
+    activeZone = null;
+    activePointerId = 0;
     dndState.end();
     emit("dragEnd", { data: props.data, group: props.group, id: effectiveId() });
 
-    placeholder?.remove();
-
     if (!g || !targetRect) {
         g?.remove();
+        placeholder?.remove();
         isDragging.value = false;
         return;
     }
 
-    g.style.transition = `translate ${ DROP_ANIM_MS }ms ${ DROP_EASING }, rotate ${ DROP_ANIM_MS }ms ${ DROP_EASING }`;
-    g.style.translate = `${ targetRect.left }px ${ targetRect.top }px`;
-    g.style.rotate = "0deg";
+    g.style.transition = `transform ${ DROP_ANIM_MS }ms ${ DROP_EASING }`;
+    g.style.transform = `translate3d(${ targetRect.left }px, ${ targetRect.top }px, 0) rotate(0deg)`;
 
     let done = false;
     const finish = () => {
@@ -170,6 +370,14 @@ function onDragEnd() {
         done = true;
         g.remove();
         isDragging.value = false;
+        if (placeholder?.dataset.dndMoveOnDrop === "true" && droppedElement) {
+            droppedElement.classList.remove("is-source");
+            placeholder.replaceWith(droppedElement);
+            return;
+        }
+
+        if (placeholder) placeholder.style.opacity = "0";
+        setTimeout(() => placeholder?.remove(), PLACEHOLDER_HOLD_MS);
     };
     g.addEventListener("transitionend", finish, { once: true });
     setTimeout(finish, DROP_ANIM_MS + 50);
@@ -179,6 +387,8 @@ function onDragEnd() {
 <style scoped>
 .draggable {
     cursor: grab;
+    touch-action: none;
+    user-select: none;
 }
 
 .draggable.is-source {
@@ -192,22 +402,27 @@ function onDragEnd() {
 }
 
 .draggable-ghost {
-    filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.12));
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.16);
+    contain: layout paint;
     left: 0;
     pointer-events: none;
     position: fixed;
     top: 0;
-    transition: rotate 120ms ease-out;
+    transition: none;
+    will-change: transform;
     z-index: 9999;
 }
 </style>
 
 <style>
 .dnd-placeholder {
+    align-self: stretch;
     background-color: color-mix(in srgb, var(--highlight-color, #3b82f6) 8%, transparent);
     border: 2px dashed var(--highlight-color, #3b82f6);
     border-radius: 6px;
     box-sizing: border-box;
+    display: block;
+    flex-shrink: 0;
     pointer-events: none;
     transition: opacity 140ms ease-out;
 }

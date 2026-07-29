@@ -6,17 +6,13 @@
         :data-dnd-dropzone-id="effectiveZoneId()"
         :data-dnd-group="group"
         :style="{ '--highlight-color': highlightColor }"
-        @dragenter="onDragEnter"
-        @dragover="onDragOver"
-        @dragleave="onDragLeave"
-        @drop="onDrop"
     >
         <slot />
     </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 
 import { dndState } from "@/components/dndState.ts";
 
@@ -34,6 +30,13 @@ type TDropPayload = TDropLocation & {
     sourceIndex: number;
     sourceZoneId: string;
 };
+
+type TDragPoint = {
+    clientX: number;
+    clientY: number;
+};
+
+type TPointerDragEvent = CustomEvent<TDragPoint>;
 
 const props = withDefaults(defineProps<{
     direction?: "horizontal" | "vertical";
@@ -62,16 +65,18 @@ const isOver = ref(false);
 const pendingLocation = ref<TDropLocation | null>(null);
 const autoId = `dropzone-${ Math.random().toString(36).slice(2, 10) }`;
 const effectiveZoneId = () => props.id || autoId;
+let placeholderFrame = 0;
+let pendingPoint: TDragPoint | null = null;
+let cleanupTimer = 0;
+let measuredElement: HTMLElement | null = null;
+let measuredRoot: HTMLElement | null = null;
+let measuredWidth = -1;
 
 function accepts(): boolean {
     if (props.disabled) return false;
     const cur = dndState.get();
     if (!cur) return false;
     return cur.group === props.group;
-}
-
-function setDropEffect(e: DragEvent) {
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
 }
 
 function visibleChildren(): Array<HTMLElement> {
@@ -90,8 +95,8 @@ function childId(child: HTMLElement | null): string {
     return child?.dataset.dndDraggableId ?? "";
 }
 
-function computeInsertTarget(e: DragEvent): HTMLElement | null {
-    const cursor = props.direction === "vertical" ? e.clientY : e.clientX;
+function computeInsertTarget(point: TDragPoint): HTMLElement | null {
+    const cursor = props.direction === "vertical" ? point.clientY : point.clientX;
     for (const child of visibleChildren()) {
         const rect = child.getBoundingClientRect();
         const mid = props.direction === "vertical"
@@ -121,11 +126,71 @@ function ensurePlaceholder(): HTMLElement {
     const cur = dndState.get();
     if (cur?.placeholder) return cur.placeholder;
     const ph = document.createElement("div");
+    measuredElement = null;
+    measuredRoot = null;
+    measuredWidth = -1;
     ph.classList.add("dnd-placeholder");
-    ph.style.width = `${ cur?.width ?? 0 }px`;
-    ph.style.height = `${ cur?.height ?? 0 }px`;
+    ph.style.backgroundColor = `color-mix(in srgb, ${ props.highlightColor } 8%, transparent)`;
+    ph.style.alignSelf = props.direction === "vertical" ? "stretch" : "auto";
+    ph.style.border = `2px dashed ${ props.highlightColor }`;
+    ph.style.borderRadius = "6px";
+    ph.style.boxSizing = "border-box";
+    ph.style.display = "block";
+    ph.style.flexShrink = "0";
+    ph.style.height = props.direction === "vertical" ? `${ cur?.height ?? 0 }px` : "auto";
+    ph.style.pointerEvents = "none";
+    ph.style.width = props.direction === "vertical" ? "auto" : `${ cur?.width ?? 0 }px`;
     dndState.setPlaceholder(ph);
     return ph;
+}
+
+function cssPixels(value: string): number {
+    const parsed = Number.parseFloat(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function updatePlaceholderSize(placeholder: HTMLElement) {
+    const cur = dndState.get();
+    if (!cur || !root.value) return;
+
+    if (props.direction === "horizontal") {
+        placeholder.style.width = `${ cur.width }px`;
+        placeholder.style.height = "auto";
+        return;
+    }
+
+    const placeholderWidth = placeholder.getBoundingClientRect().width;
+    if (
+        measuredElement === cur.element
+        && measuredRoot === root.value
+        && Math.abs(placeholderWidth - measuredWidth) < 0.5
+    ) {
+        return;
+    }
+
+    const measuringElement = cur.element.cloneNode(true) as HTMLElement;
+    measuringElement.removeAttribute("data-dnd-draggable-id");
+    measuringElement.classList.remove("is-source");
+    measuringElement.style.alignSelf = "auto";
+    measuringElement.style.boxSizing = "border-box";
+    measuringElement.style.display = "block";
+    measuringElement.style.opacity = "0";
+    measuringElement.style.pointerEvents = "none";
+    measuringElement.style.position = "static";
+    measuringElement.style.visibility = "hidden";
+    measuringElement.style.width = `${ placeholderWidth || root.value.getBoundingClientRect().width }px`;
+
+    placeholder.replaceWith(measuringElement);
+    const measuredHeight = measuringElement.getBoundingClientRect().height;
+    const measuredStyle = window.getComputedStyle(measuringElement);
+    const measuredMargin = cssPixels(measuredStyle.marginTop) + cssPixels(measuredStyle.marginBottom);
+    measuringElement.replaceWith(placeholder);
+
+    measuredElement = cur.element;
+    measuredRoot = root.value;
+    measuredWidth = placeholderWidth;
+    placeholder.style.height = `${ (measuredHeight || cur.height) + measuredMargin }px`;
+    placeholder.style.width = "auto";
 }
 
 function positionPlaceholder(target: HTMLElement | null): TDropLocation | null {
@@ -140,17 +205,40 @@ function positionPlaceholder(target: HTMLElement | null): TDropLocation | null {
         else root.value.appendChild(placeholder);
     }
 
+    updatePlaceholderSize(placeholder);
     pendingLocation.value = location;
     return location;
 }
 
-function removeOwnPlaceholder() {
+function ownPlaceholder(): HTMLElement | null {
+    if (!root.value) return null;
+
+    return Array.from(root.value.children).find((child): child is HTMLElement => {
+        return child instanceof HTMLElement && child.classList.contains("dnd-placeholder");
+    }) ?? null;
+}
+
+function removeOwnPlaceholder(force = false) {
+    cancelPlaceholderFrame();
     const cur = dndState.get();
-    const placeholder = cur?.placeholder;
+    const placeholder = cur?.placeholder ?? ownPlaceholder();
     if (!placeholder || placeholder.parentNode !== root.value) return;
+    if (!force && placeholder.dataset.dndMoveOnDrop === "true") return;
+
     placeholder.remove();
-    dndState.setPlaceholder(null);
+    if (cur?.placeholder === placeholder) dndState.setPlaceholder(null);
+    measuredElement = null;
+    measuredRoot = null;
+    measuredWidth = -1;
     pendingLocation.value = null;
+}
+
+function scheduleForcedCleanup() {
+    if (cleanupTimer) window.clearTimeout(cleanupTimer);
+    cleanupTimer = window.setTimeout(() => {
+        cleanupTimer = 0;
+        removeOwnPlaceholder(true);
+    }, 600);
 }
 
 function enter() {
@@ -165,31 +253,50 @@ function leave() {
     emit("dragLeave", { group: props.group, zoneId: effectiveZoneId() });
 }
 
-function onDragEnter(e: DragEvent) {
+function cancelPlaceholderFrame() {
+    if (!placeholderFrame) return;
+    cancelAnimationFrame(placeholderFrame);
+    placeholderFrame = 0;
+    pendingPoint = null;
+}
+
+function flushPlaceholderFrame() {
+    placeholderFrame = 0;
+    if (!pendingPoint) return;
+
+    positionPlaceholder(computeInsertTarget(pendingPoint));
+    pendingPoint = null;
+}
+
+function schedulePlaceholder(point: TDragPoint) {
+    pendingPoint = {
+        clientX: point.clientX,
+        clientY: point.clientY
+    };
+    if (placeholderFrame) return;
+    placeholderFrame = requestAnimationFrame(flushPlaceholderFrame);
+}
+
+function eventPoint(event: Event): TDragPoint {
+    return (event as TPointerDragEvent).detail;
+}
+
+function onPointerMove(event: Event) {
     if (!accepts()) return;
-    e.preventDefault();
-    setDropEffect(e);
+    schedulePlaceholder(eventPoint(event));
     enter();
 }
 
-function onDragOver(e: DragEvent) {
-    if (!accepts()) return;
-    e.preventDefault();
-    setDropEffect(e);
-    positionPlaceholder(computeInsertTarget(e));
-    enter();
-}
-
-function onDragLeave(e: DragEvent) {
-    const related = e.relatedTarget as Node | null;
-    if (related && (e.currentTarget as Node).contains(related)) return;
+function onPointerLeave() {
     removeOwnPlaceholder();
     leave();
 }
 
-function onDrop(e: DragEvent) {
+function onPointerDrop(event: Event) {
     if (!accepts()) return;
-    e.preventDefault();
+    const point = eventPoint(event);
+    cancelPlaceholderFrame();
+    positionPlaceholder(computeInsertTarget(point));
     const cur = dndState.get();
     if (!cur || !root.value) return;
 
@@ -197,9 +304,7 @@ function onDrop(e: DragEvent) {
     if (placeholder && placeholder.parentNode === root.value) {
         // The source is hidden, so the placeholder is the stable animation target.
         dndState.setDropRect(placeholder.getBoundingClientRect());
-        if (props.moveOnDrop) root.value.insertBefore(cur.element, placeholder);
-        placeholder.remove();
-        dndState.setPlaceholder(null);
+        if (props.moveOnDrop) placeholder.dataset.dndMoveOnDrop = "true";
     } else if (props.moveOnDrop && cur.element.parentNode !== root.value) {
         root.value.appendChild(cur.element);
     }
@@ -207,6 +312,7 @@ function onDrop(e: DragEvent) {
     const location = pendingLocation.value ?? computeLocation(null);
     pendingLocation.value = null;
     leave();
+    scheduleForcedCleanup();
 
     emit("drop", {
         data: cur.data,
@@ -217,6 +323,20 @@ function onDrop(e: DragEvent) {
         ...location
     });
 }
+
+onMounted(() => {
+    root.value?.addEventListener("dndpointermove", onPointerMove);
+    root.value?.addEventListener("dndpointerleave", onPointerLeave);
+    root.value?.addEventListener("dndpointerdrop", onPointerDrop);
+});
+
+onUnmounted(() => {
+    if (cleanupTimer) window.clearTimeout(cleanupTimer);
+    cancelPlaceholderFrame();
+    root.value?.removeEventListener("dndpointermove", onPointerMove);
+    root.value?.removeEventListener("dndpointerleave", onPointerLeave);
+    root.value?.removeEventListener("dndpointerdrop", onPointerDrop);
+});
 </script>
 
 <style scoped>
