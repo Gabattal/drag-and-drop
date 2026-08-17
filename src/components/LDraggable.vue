@@ -185,7 +185,14 @@ function copyRenderedElement(from: Element, to: Element) {
 }
 
 function ghostTransform(x: number, y: number, tilt = 0): string {
-    return `translate3d(${ x - offsetX }px, ${ y - offsetY }px, 0) rotate(${ tilt }deg)`;
+    return `translate3d(${ x - offsetX }px, ${ y - offsetY }px, 0) rotate(${ tilt }deg) scale(1, 1)`;
+}
+
+function lockElementSize(element: HTMLElement) {
+    element.style.boxSizing = "border-box";
+    element.style.flex = "0 0 auto";
+    element.style.width = `${ ghostWidth }px`;
+    element.style.height = `${ ghostHeight }px`;
 }
 
 function removeStaleDragArtifacts() {
@@ -257,6 +264,7 @@ function onPointerDown(e: PointerEvent) {
     copyRenderedElement(source, ghost);
     ghost.classList.add("draggable-ghost");
     ghost.style.boxShadow = "0 12px 30px rgba(15, 23, 42, 0.16)";
+    ghost.style.boxSizing = "border-box";
     ghost.style.contain = "layout paint";
     ghost.style.left = "0";
     ghost.style.margin = "0";
@@ -345,7 +353,21 @@ function finishDrag() {
     const cur = dndState.get();
     const placeholder = cur?.placeholder ?? null;
     const droppedElement = cur?.element ?? null;
-    const targetRect = cur?.dropRect ?? cur?.sourceRect ?? null;
+    let targetRect = cur?.dropRect ?? cur?.sourceRect ?? null;
+    let settledElement: HTMLElement | null = null;
+    let previousVisibility = "";
+    let previousVisibilityPriority = "";
+
+    if (placeholder?.dataset.dndMoveOnDrop === "true" && droppedElement) {
+        previousVisibility = droppedElement.style.getPropertyValue("visibility");
+        previousVisibilityPriority = droppedElement.style.getPropertyPriority("visibility");
+        droppedElement.style.setProperty("visibility", "hidden", "important");
+        lockElementSize(droppedElement);
+        droppedElement.classList.remove("is-source");
+        placeholder.replaceWith(droppedElement);
+        settledElement = droppedElement;
+        isDragging.value = false;
+    }
 
     ghost = null;
     source = null;
@@ -358,21 +380,32 @@ function finishDrag() {
         g?.remove();
         placeholder?.remove();
         isDragging.value = false;
+        if (settledElement) {
+            settledElement.style.setProperty("visibility", previousVisibility, previousVisibilityPriority);
+        }
         return;
     }
 
-    g.style.transition = `transform ${ DROP_ANIM_MS }ms ${ DROP_EASING }`;
-    g.style.transform = `translate3d(${ targetRect.left }px, ${ targetRect.top }px, 0) rotate(0deg)`;
-
     let done = false;
+    let dropFrame = requestAnimationFrame(animateDrop);
+
+    function animateDrop() {
+        dropFrame = 0;
+        if (settledElement) targetRect = settledElement.getBoundingClientRect();
+        if (!targetRect) return;
+
+        g.style.transition = `transform ${ DROP_ANIM_MS }ms ${ DROP_EASING }`;
+        g.style.transform = `translate3d(${ targetRect.left }px, ${ targetRect.top }px, 0) rotate(0deg) scale(1, 1)`;
+    }
+
     const finish = () => {
         if (done) return;
         done = true;
+        if (dropFrame) cancelAnimationFrame(dropFrame);
         g.remove();
         isDragging.value = false;
-        if (placeholder?.dataset.dndMoveOnDrop === "true" && droppedElement) {
-            droppedElement.classList.remove("is-source");
-            placeholder.replaceWith(droppedElement);
+        if (settledElement) {
+            settledElement.style.setProperty("visibility", previousVisibility, previousVisibilityPriority);
             return;
         }
 

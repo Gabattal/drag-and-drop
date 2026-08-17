@@ -137,7 +137,7 @@ function ensurePlaceholder(): HTMLElement {
     ph.style.boxSizing = "border-box";
     ph.style.display = "block";
     ph.style.flexShrink = "0";
-    ph.style.height = props.direction === "vertical" ? `${ cur?.height ?? 0 }px` : "auto";
+    ph.style.height = `${ cur?.height ?? 0 }px`;
     ph.style.pointerEvents = "none";
     ph.style.width = props.direction === "vertical" ? "auto" : `${ cur?.width ?? 0 }px`;
     dndState.setPlaceholder(ph);
@@ -155,7 +155,7 @@ function updatePlaceholderSize(placeholder: HTMLElement) {
 
     if (props.direction === "horizontal") {
         placeholder.style.width = `${ cur.width }px`;
-        placeholder.style.height = "auto";
+        placeholder.style.height = `${ cur.height }px`;
         return;
     }
 
